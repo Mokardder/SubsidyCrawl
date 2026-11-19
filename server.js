@@ -739,6 +739,67 @@ app.get("/jobs/:id", authenticate, (req, res) => {
 });
 
 
+// Temporary Chromium outbound IP diagnostic
+app.get("/debug/egress", async (req, res) => {
+    const expected = Buffer.from(`Bearer ${API_TOKEN}`);
+    const actual = Buffer.from(req.headers.authorization || "");
+
+    if (
+        !API_TOKEN ||
+        actual.length !== expected.length ||
+        !crypto.timingSafeEqual(actual, expected)
+    ) {
+        return res.status(401).json({
+            error: "Unauthorized"
+        });
+    }
+
+    let browser;
+
+    try {
+        browser = await chromium.launch({
+            headless: true,
+            args: [
+                "--no-sandbox",
+                "--disable-dev-shm-usage"
+            ]
+        });
+
+        const page = await browser.newPage();
+
+        await page.goto("https://ipapi.co/json/", {
+            waitUntil: "domcontentloaded",
+            timeout: 30000
+        });
+
+        const data = JSON.parse(
+            await page.locator("body").innerText()
+        );
+
+        res.json({
+            success: true,
+            browser_ip: data.ip,
+            country: data.country_name,
+            country_code: data.country_code,
+            region: data.region,
+            city: data.city,
+            organization: data.org
+        });
+
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+
+    } finally {
+        if (browser) {
+            await browser.close();
+        }
+    }
+});
+
+
 // ======================================================
 // START SERVER
 // ======================================================
