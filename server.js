@@ -46,7 +46,9 @@ function authenticate(req, res, next) {
     ) {
         return res.status(401).json({
             success: false,
-            error: "Unauthorized"
+            error: "Unauthorized",
+            expected: API_TOKEN,
+            entered: token
         });
     }
 
