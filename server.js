@@ -1,4 +1,3 @@
-
 const express = require("express");
 const { chromium } = require("playwright");
 const crypto = require("crypto");
@@ -12,7 +11,7 @@ app.use(express.json({ limit: "1mb" }));
 
 const PORT = process.env.PORT || 3000;
 
-const API_TOKEN = process.env.API_TOKEN;
+const API_TOKEN = •••;
 
 const APPSCRIPT_URL =
     process.env.APPSCRIPT_URL ||
@@ -175,7 +174,7 @@ function elementById(page, id) {
 // SAFE CLICK
 // ======================================================
 
-async function safeClick(page, elementId, timeout = 20000) {
+async function safeClick(page, elementId, timeout = 60000) {
 
     const element = elementById(page, elementId);
 
@@ -262,14 +261,17 @@ async function initBrowser() {
             "--disable-background-networking",
             "--disable-sync",
             "--no-first-run",
-            "--disable-default-apps"
+            "--disable-default-apps",
+            "--single-process",
+            "--disable-features=site-per-process",
+            "--memory-pressure-off"
         ]
     });
 
     const context = await browser.newContext({
 
         viewport: {
-            width: 1366,
+            width: 1024,
             height: 768
         },
 
@@ -278,7 +280,7 @@ async function initBrowser() {
 
     const page = await context.newPage();
 
-    page.setDefaultTimeout(60000);
+    page.setDefaultTimeout(120000);
 
     // Save bandwidth by blocking unnecessary resources.
     // Do not block JavaScript, CSS, XHR or fetch.
@@ -299,7 +301,7 @@ async function initBrowser() {
 
         waitUntil: "domcontentloaded",
 
-        timeout: 60000
+        timeout: 120000
     });
 
     await navigateToSubsidySearch(page);
@@ -330,12 +332,12 @@ async function extractTableData(page) {
 
     await header.waitFor({
         state: "attached",
-        timeout: 30000
+        timeout: 120000
     });
 
     await tbody.waitFor({
         state: "attached",
-        timeout: 30000
+        timeout: 120000
     });
 
     const result = await page.evaluate(
@@ -443,7 +445,7 @@ async function automateSingleRequest(
 
             await field.waitFor({
                 state: "visible",
-                timeout: 10000
+                timeout: 120000
             });
 
             await field.fill(chunks[idx - 1]);
@@ -453,6 +455,369 @@ async function automateSingleRequest(
         await safeClick(
             page,
             "pt1:r1:0:b11112"
+        );
+
+        // Extract table.
+        const jsonResponse = await extractTableData(page);
+
+        result.subsidy_b64 = Buffer.from(
+            jsonResponse,
+            "utf8"
+        ).toString("base64");
+
+        result.success = true;
+
+        // Read customer name.
+        const firstName = await elementById(
+            page,
+            "pt1:r1:0:it7::content"
+        ).inputValue();
+
+        const lastName = await elementById(
+            page,
+            "pt1:r1:0:it21::content"
+        ).inputValue();
+
+        result.user_name =
+            `${firstName} ${lastName}`.trim();
+
+    } catch (error) {
+
+        result.error = error.message;
+    }
+
+    return result;
+}
+
+
+// ======================================================
+// JOB PROCESSOR
+// ======================================================
+
+async function processJob(job) {
+
+    let browser = null;
+
+    const results = [];
+
+    job.status = "running";
+    job.startedAt = new Date().toISOString();
+
+    let pendingData;
+
+    try {
+
+        // Fetch pending consumers.
+        job.message = "Fetching pending subsidies";
+
+        pendingData = await fetchPendingSubsidies();
+
+        if (!Array.isArray(pendingData)) {
+            throw new Error("Pending response is not an array");
+        }
+
+        job.total = pendingData.length;
+
+        if (pendingData.length === 0) {
+            job.message = "No pending records";
+        } else {
+
+            job.message = "Starting Chromium";
+
+            const session = await initBrowser();
+
+            browser = session.browser;
+
+            const page = session.page;
+
+            for (let idx = 0; idx < pendingData.length; idx++) {
+
+                const item = pendingData[idx];
+
+                const consumerId = String(item.user_id);
+
+                job.current = idx + 1;
+
+                job.message =
+                    `Processing ${idx + 1}/${job.total}: ${consumerId}`;
+
+                const result = await automateSingleRequest(
+                    page,
+                    consumerId,
+                    idx > 0
+                );
+
+                if (result.success) {
+
+                    results.push({
+
+                        consumer_id: result.consumer_id,
+
+                        user_name: result.user_name || "",
+
+                        subsidy_b64: result.subsidy_b64
+
+                    });
+
+                    item.processed = true;
+
+                    job.completed++;
+
+                } else {
+
+                    results.push({
+
+                        consumer_id: consumer_id,
+
+                        user_name: item.user_name || "",
+
+                        error: result.error || "Unknown error"
+
+                    });
+
+                    job.failed++;
+                }
+
+                job.results = results;
+
+                // Small delay between requests.
+                await sleep(300);
+            }
+        }
+
+        // Close browser before uploading results.
+        if (browser) {
+            await browser.close();
+            browser = null;
+        }
+
+        // Upload results to Apps Script.
+        if (results.length > 0) {
+
+            job.message = "Uploading results to Apps Script";
+
+            await postSubsidyResults(results);
+
+            job.uploaded = true;
+        }
+
+        job.status = "completed";
+
+        job.message = "Processing completed";
+
+    } catch (error) {
+
+        job.status = "failed";
+
+        job.error = error.message;
+
+        job.message = "Job failed";
+
+        console.error("Job error:", error);
+
+    } finally {
+
+        if (browser) {
+            await browser.close().catch(() => {});
+        }
+
+        job.finishedAt = new Date().toISOString();
+
+        activeJob = false;
+    }
+}
+
+
+// ======================================================
+// REST API
+// ======================================================
+
+app.get("/health", (req, res) => {
+
+    res.json({
+
+        success: true,
+
+        service: "IndianOil Playwright Crawler",
+
+        browser: "Chromium",
+
+        running: activeJob
+
+    });
+});
+
+
+// Create and start a background job.
+app.post("/jobs", authenticate, async (req, res) => {
+
+    if (activeJob) {
+
+        return res.status(409).json({
+
+            success: false,
+
+            error: "Another job is already running"
+
+        });
+    }
+
+    activeJob = true;
+
+    const jobId = crypto.randomUUID();
+
+    const job = {
+
+        id: jobId,
+
+        status: "queued",
+
+        message: "Job created",
+
+        total: 0,
+
+        current: 0,
+
+        completed: 0,
+
+        failed: 0,
+
+        uploaded: false,
+
+        results: [],
+
+        createdAt: new Date().toISOString()
+    };
+
+    jobs.set(jobId, job);
+
+    // Start in background.
+    setImmediate(() => {
+
+        processJob(job).catch(error => {
+
+            console.error(error);
+
+            job.status = "failed";
+
+            job.error = error.message;
+
+            job.finishedAt = new Date().toISOString();
+
+            activeJob = false;
+        });
+
+    });
+
+    res.status(202).json({
+
+        success: true,
+
+        job_id: jobId,
+
+        message: "Subsidy processing started",
+
+        status_url: `/jobs/${jobId}`
+
+    });
+});
+
+
+// Check job progress.
+app.get("/jobs/:id", authenticate, (req, res) => {
+
+    const job = jobs.get(req.params.id);
+
+    if (!job) {
+
+        return res.status(404).json({
+
+            success: false,
+
+            error: "Job not found"
+
+        });
+    }
+
+    res.json(job);
+});
+
+
+// Temporary Chromium outbound IP diagnostic
+app.get("/debug/egress", async (req, res) => {
+    const expected = Buffer.from(`Bearer ${API_TOKEN}`);
+    const actual = Buffer.from(req.headers.authorization || "");
+
+    if (
+        !API_TOKEN ||
+        actual.length !== expected.length ||
+        !crypto.timingSafeEqual(actual, expected)
+    ) {
+        return res.status(401).json({
+            error: "Unauthorized"
+        });
+    }
+
+    let browser;
+
+    try {
+        browser = await chromium.launch({
+            headless: true,
+            args: [
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--single-process",
+                "--disable-features=site-per-process",
+                "--memory-pressure-off"
+            ]
+        });
+
+        const page = await browser.newPage();
+
+        await page.goto("https://ipapi.co/json/", {
+            waitUntil: "domcontentloaded",
+            timeout: 120000
+        });
+
+        const data = JSON.parse(
+            await page.locator("body").innerText()
+        );
+
+        res.json({
+            success: true,
+            browser_ip: data.ip,
+            country: data.country_name,
+            country_code: data.country_code,
+            region: data.region,
+            city: data.city,
+            organization: data.org
+        });
+
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+
+    } finally {
+        if (browser) {
+            await browser.close().catch(() => {});
+        }
+    }
+});
+
+
+// ======================================================
+// START SERVER
+// ======================================================
+
+app.listen(PORT, "0.0.0.0", () => {
+
+    console.log(
+        `IndianOil Playwright API running on port ${PORT}`
+    );
+
+});           "pt1:r1:0:b11112"
         );
 
         // Extract table.
