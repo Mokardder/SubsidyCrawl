@@ -278,7 +278,7 @@ async function initBrowser() {
 
     const page = await context.newPage();
 
-    page.setDefaultTimeout(20000);
+    page.setDefaultTimeout(60000);
 
     // Save bandwidth by blocking unnecessary resources.
     // Do not block JavaScript, CSS, XHR or fetch.
