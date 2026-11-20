@@ -43,11 +43,10 @@ function authenticate(req, res, next) {
         suppliedBuffer.length !== expectedBuffer.length ||
         !crypto.timingSafeEqual(suppliedBuffer, expectedBuffer)
     ) {
+        // Never return the configured or supplied token in an API response.
         return res.status(401).json({
             success: false,
-            error: "Unauthorized",
-            expected: API_TOKEN,
-            entered: token
+            error: "Unauthorized"
         });
     }
 
@@ -249,68 +248,81 @@ async function navigateToSubsidySearch(page) {
 
 async function initBrowser() {
 
-    const browser = await chromium.launch({
+    let browser = null;
 
-        headless: true,
+    try {
+        browser = await chromium.launch({
 
-        args: [
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--disable-extensions",
-            "--disable-background-networking",
-            "--disable-sync",
-            "--no-first-run",
-            "--disable-default-apps",
-            "--single-process",
-            "--disable-features=site-per-process",
-            "--memory-pressure-off"
-        ]
-    });
+            headless: true,
 
-    const context = await browser.newContext({
+            args: [
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-extensions",
+                "--disable-background-networking",
+                "--disable-sync",
+                "--no-first-run",
+                "--disable-default-apps",
+                "--single-process",
+                "--disable-features=site-per-process",
+                "--memory-pressure-off"
+            ]
+        });
 
-        viewport: {
-            width: 1024,
-            height: 768
-        },
+        const context = await browser.newContext({
 
-        acceptDownloads: false
-    });
+            viewport: {
+                width: 1024,
+                height: 768
+            },
 
-    const page = await context.newPage();
+            acceptDownloads: false
+        });
 
-    page.setDefaultTimeout(120000);
+        const page = await context.newPage();
 
-    // Save bandwidth by blocking unnecessary resources.
-    // Do not block JavaScript, CSS, XHR or fetch.
-    await page.route("**/*", async route => {
+        page.setDefaultTimeout(120000);
 
-        const type = route.request().resourceType();
+        // Save bandwidth by blocking unnecessary resources.
+        // Do not block JavaScript, CSS, XHR or fetch.
+        await page.route("**/*", async route => {
 
-        if (
-            ["image", "font", "media"].includes(type)
-        ) {
-            return route.abort();
+            const type = route.request().resourceType();
+
+            if (
+                ["image", "font", "media"].includes(type)
+            ) {
+                return route.abort();
+            }
+
+            return route.continue();
+        });
+
+        await page.goto(PORTAL_URL, {
+
+            waitUntil: "domcontentloaded",
+
+            timeout: 120000
+        });
+
+        await navigateToSubsidySearch(page);
+
+        return {
+            browser,
+            context,
+            page
+        };
+
+    } catch (error) {
+
+        // Do not leak Chromium processes when initialization fails.
+        if (browser) {
+            await browser.close().catch(() => {});
         }
 
-        return route.continue();
-    });
-
-    await page.goto(PORTAL_URL, {
-
-        waitUntil: "domcontentloaded",
-
-        timeout: 120000
-    });
-
-    await navigateToSubsidySearch(page);
-
-    return {
-        browser,
-        context,
-        page
-    };
+        throw error;
+    }
 }
 
 
@@ -567,7 +579,7 @@ async function processJob(job) {
 
                     results.push({
 
-                        consumer_id: consumer_id,
+                        consumer_id: consumerId,
 
                         user_name: item.user_name || "",
 
