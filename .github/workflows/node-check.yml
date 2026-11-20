@@ -1,20 +1,76 @@
-name: Node.js syntax check
+name: Node.js + Chromium test
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
-  syntax:
+  test:
+    name: Syntax and headless Chromium smoke test
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      - name: Install Node dependencies
+        run: npm install --no-audit --no-fund
+
       - name: Check server.js syntax
         run: node --check server.js
+
+      - name: Install Chromium and system dependencies
+        run: npx playwright install --with-deps chromium
+
+      - name: Launch Chromium and verify page navigation
+        run: |
+          node <<'NODE'
+          const { chromium } = require("playwright");
+
+          (async () => {
+            let browser;
+
+            try {
+              browser = await chromium.launch({ headless: true });
+              const page = await browser.newPage();
+
+              const response = await page.goto("https://example.com", {
+                waitUntil: "domcontentloaded",
+                timeout: 30000
+              });
+
+              if (!response || !response.ok()) {
+                throw new Error(`Example page returned HTTP ${response && response.status()}`);
+              }
+
+              const title = await page.title();
+
+              if (title !== "Example Domain") {
+                throw new Error(`Unexpected page title: ${title}`);
+              }
+
+              console.log("PASS: Chromium launched successfully.");
+              console.log("PASS: Playwright navigated to https://example.com.");
+              console.log("PASS: Page title =", title);
+            } finally {
+              if (browser) {
+                await browser.close();
+              }
+            }
+          })().catch((error) => {
+            console.error("Chromium smoke test failed:", error);
+            process.exitCode = 1;
+          });
+          NODE
