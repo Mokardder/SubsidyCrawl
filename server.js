@@ -11,7 +11,7 @@ app.use(express.json({ limit: "1mb" }));
 
 const PORT = process.env.PORT || 3000;
 
-const API_TOKEN = •••;
+const API_TOKEN = process.env.API_TOKEN;
 
 const APPSCRIPT_URL =
     process.env.APPSCRIPT_URL ||
