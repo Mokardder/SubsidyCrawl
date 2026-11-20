@@ -1,4 +1,4 @@
-name: Node.js + Chromium test
+name: Node.js + Chromium + IndianOil portal test
 
 on:
   push:
@@ -12,9 +12,9 @@ permissions:
 
 jobs:
   test:
-    name: Syntax and headless Chromium smoke test
+    name: Syntax, Chromium, and IndianOil portal smoke test
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Check out repository
@@ -34,18 +34,16 @@ jobs:
       - name: Install Chromium and system dependencies
         run: npx playwright install --with-deps chromium
 
-      - name: Launch Chromium and verify page navigation
+      - name: Verify headless Chromium
         run: |
           node <<'NODE'
           const { chromium } = require("playwright");
 
           (async () => {
             let browser;
-
             try {
               browser = await chromium.launch({ headless: true });
               const page = await browser.newPage();
-
               const response = await page.goto("https://example.com", {
                 waitUntil: "domcontentloaded",
                 timeout: 30000
@@ -56,21 +54,83 @@ jobs:
               }
 
               const title = await page.title();
-
               if (title !== "Example Domain") {
                 throw new Error(`Unexpected page title: ${title}`);
               }
 
-              console.log("PASS: Chromium launched successfully.");
-              console.log("PASS: Playwright navigated to https://example.com.");
-              console.log("PASS: Page title =", title);
+              console.log("PASS: Chromium launched and navigated successfully.");
             } finally {
-              if (browser) {
-                await browser.close();
-              }
+              if (browser) await browser.close();
             }
-          })().catch((error) => {
-            console.error("Chromium smoke test failed:", error);
+          })().catch(error => {
+            console.error("Chromium smoke test failed:", error.message);
+            process.exitCode = 1;
+          });
+          NODE
+
+      - name: Check IndianOil portal connectivity
+        run: |
+          node <<'NODE'
+          const { chromium } = require("playwright");
+
+          const portalUrl = "https://cx.indianoil.in/EPICIOCL/faces/GrievanceMainPage.jspx";
+
+          (async () => {
+            let browser;
+            try {
+              browser = await chromium.launch({
+                headless: true,
+                args: ["--no-sandbox", "--disable-dev-shm-usage"]
+              });
+
+              const context = await browser.newContext({
+                viewport: { width: 1024, height: 768 }
+              });
+              const page = await context.newPage();
+              page.setDefaultNavigationTimeout(90000);
+
+              // Match the crawler's bandwidth-saving behavior.
+              await page.route("**/*", route => {
+                const type = route.request().resourceType();
+                return ["image", "font", "media"].includes(type)
+                  ? route.abort()
+                  : route.continue();
+              });
+
+              const response = await page.goto(portalUrl, {
+                waitUntil: "domcontentloaded",
+                timeout: 90000
+              });
+
+              if (!response) {
+                throw new Error("IndianOil portal did not return a main document response.");
+              }
+
+              console.log("IndianOil HTTP status:", response.status());
+              console.log("Final URL:", page.url());
+
+              if (!response.ok()) {
+                throw new Error(`IndianOil portal returned HTTP ${response.status()}.`);
+              }
+
+              if (new URL(page.url()).hostname !== "cx.indianoil.in") {
+                throw new Error("Navigation left the expected IndianOil portal host.");
+              }
+
+              await page.waitForLoadState("domcontentloaded");
+              const bodyText = await page.locator("body").innerText({ timeout: 30000 }).catch(() => "");
+              if (bodyText.trim().length < 20) {
+                throw new Error("Portal response loaded but its page body appears empty.");
+              }
+
+              console.log("PASS: IndianOil portal responded and rendered a non-empty page.");
+              console.log("Page title:", await page.title());
+              console.log("Note: This is a connectivity check, not a login or subsidy-data test.");
+            } finally {
+              if (browser) await browser.close();
+            }
+          })().catch(error => {
+            console.error("IndianOil portal test failed:", error.message);
             process.exitCode = 1;
           });
           NODE
